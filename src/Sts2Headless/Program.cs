@@ -114,6 +114,21 @@ class Program
                 return sim.ExecuteAction(action, actionArgs);
             }
 
+            case "load_save":
+            {
+                var savePath = cmd.TryGetProperty("path", out var sp) ? sp.GetString() : null;
+                var saveJson = cmd.TryGetProperty("json", out var sj) ? sj.GetString() : null;
+                if (saveJson == null && savePath != null)
+                {
+                    if (!File.Exists(savePath))
+                        return new Dictionary<string, object?> { ["type"] = "error", ["message"] = $"Save file not found: {savePath}" };
+                    saveJson = File.ReadAllText(savePath);
+                }
+                if (saveJson == null)
+                    return new Dictionary<string, object?> { ["type"] = "error", ["message"] = "Provide 'path' or 'json' for load_save" };
+                return sim.LoadSave(saveJson);
+            }
+
             case "get_map":
                 return sim.GetFullMap();
 
@@ -140,6 +155,70 @@ class Program
                     foreach (var c in cardsArr.EnumerateArray())
                         cards.Add(c.GetString() ?? "");
                 return sim.SetDrawOrder(cards);
+            }
+
+            case "save_game":
+            {
+                var outputPath = cmd.TryGetProperty("path", out var op) ? op.GetString() : null;
+                return sim.SaveGame(outputPath);
+            }
+
+            case "inspect_api":
+            {
+                var targets = new[] { "SaveManager", "RunState" };
+                var typeFilter = cmd.TryGetProperty("type", out var tf) ? tf.GetString() : null;
+                if (typeFilter != null) targets = new[] { typeFilter };
+                
+                var results = new List<Dictionary<string, object?>>();
+                // Load sts2.dll directly
+                var sts2LibDir = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "lib");
+                if (!Directory.Exists(sts2LibDir))
+                    sts2LibDir = Path.Combine(AppContext.BaseDirectory, "lib");
+                var sts2Path = Path.Combine(sts2LibDir, "sts2.dll");
+                var assemblies = new List<System.Reflection.Assembly>(AppDomain.CurrentDomain.GetAssemblies());
+                if (File.Exists(sts2Path))
+                {
+                    try { assemblies.Add(System.Reflection.Assembly.LoadFrom(Path.GetFullPath(sts2Path))); }
+                    catch { }
+                }
+                // Also try typeof(MegaCrit.Sts2.Core.Saves.SaveManager).Assembly
+                try { assemblies.Add(typeof(MegaCrit.Sts2.Core.Saves.SaveManager).Assembly); }
+                catch { }
+                
+                var seen = new HashSet<string>();
+                foreach (var asm in assemblies)
+                {
+                    Type[] types;
+                    try { types = asm.GetTypes(); }
+                    catch (ReflectionTypeLoadException ex) { types = ex.Types.Where(t => t != null).ToArray()!; }
+                    catch { continue; }
+                    
+                    foreach (var t in types)
+                    {
+                        if (t == null) continue;
+                        if (!targets.Any(x => t.Name.Contains(x, StringComparison.OrdinalIgnoreCase))) continue;
+                        if (!seen.Add(t.FullName ?? "")) continue;
+                        var methods = new List<string>();
+                        var flags = System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic 
+                            | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Static 
+                            | System.Reflection.BindingFlags.DeclaredOnly;
+                        foreach (var m in t.GetMethods(flags).OrderBy(m => m.Name))
+                        {
+                            var parms = string.Join(", ", m.GetParameters().Select(p => $"{p.ParameterType.Name} {p.Name}"));
+                            var mods = m.IsStatic ? "static " : "";
+                            methods.Add($"{mods}{m.ReturnType.Name} {m.Name}({parms})");
+                        }
+                        var props = t.GetProperties(flags).Select(p => $"{p.PropertyType.Name} {p.Name}").ToList();
+                        results.Add(new Dictionary<string, object?>
+                        {
+                            ["type_name"] = t.FullName,
+                            ["base"] = t.BaseType?.FullName,
+                            ["methods"] = methods,
+                            ["properties"] = props,
+                        });
+                    }
+                }
+                return new Dictionary<string, object?> { ["type"] = "api_info", ["types"] = results };
             }
 
             case "quit":

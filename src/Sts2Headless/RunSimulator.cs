@@ -457,7 +457,111 @@ public class RunSimulator
     }
 
     // ─── Game actions ───
+    public Dictionary<string, object?> LoadSave(string saveJson)
+    {
+        try
+        {
+            EnsureModelDbInitialized();
 
+            Log("Loading save file...");
+
+            // Deserialize the save JSON into SerializableRun
+            var readResult = SaveManager.FromJson<SerializableRun>(saveJson);
+            if (!readResult.Success || readResult.SaveData == null)
+                return Error($"Failed to parse save file: {readResult.Status} {readResult.ErrorMessage}");
+
+            var save = readResult.SaveData;
+            Log($"Save loaded: seed={save.SerializableRng?.Seed}, act={save.CurrentActIndex}, ascension={save.Ascension}");
+
+            // Create RunState from the serializable save
+            _runState = RunState.FromSerializable(save);
+            if (_runState == null)
+                return Error("Failed to create RunState from save");
+
+            Log($"RunState created, players={_runState.Players?.Count}");
+
+            // Set up RunManager for saved single-player run
+            var netService = new NetSingleplayerGameService();
+            RunManager.Instance.SetUpSavedSinglePlayer(_runState, save);
+            LocalContext.NetId = netService.NetId;
+
+            // Register event handlers
+            CombatManager.Instance.TurnStarted += _ => _turnStarted.Set();
+            CombatManager.Instance.CombatEnded += _ => _combatEnded.Set();
+
+            // Register card selector
+            CardSelectCmd.UseSelector(_cardSelector);
+            LocPatches._bundleSimRef = this;
+
+            // Save visited coords before Launch (EnterAct will clear them)
+            var savedVisitedCoords = _runState.VisitedMapCoords?.ToList() ?? new List<MapCoord>();
+            Log($"Save has {savedVisitedCoords.Count} visited coords");
+
+            RunManager.Instance.Launch();
+            Log("Run launched");
+
+            RunManager.Instance.EnterAct(_runState.CurrentActIndex, doTransition: false).GetAwaiter().GetResult();
+            _syncCtx.Pump();
+            Log($"Entered Act {_runState.CurrentActIndex}");
+
+            // EnterAct clears visited coords and ActFloor — restore them from save
+            if (savedVisitedCoords.Count > 0)
+            {
+                if (_runState.VisitedMapCoords == null || _runState.VisitedMapCoords.Count == 0)
+                {
+                    foreach (var coord in savedVisitedCoords)
+                        _runState.AddVisitedMapCoord(coord);
+                }
+                _runState.ActFloor = savedVisitedCoords.Count;
+                var last = savedVisitedCoords[^1];
+                Log($"Restored map position: floor={_runState.ActFloor}, coord=({last.col},{last.row})");
+            }
+
+            return DetectDecisionPoint();
+        }
+        catch (Exception ex)
+        {
+            return ErrorWithTrace("LoadSave failed", ex);
+        }
+    }
+
+    public Dictionary<string, object?> SaveGame(string? outputPath)
+    {
+        try
+        {
+            if (_runState == null)
+                return Error("No active run to save");
+
+            var currentRoom = _runState.CurrentRoom;
+            Log($"Saving game (room={currentRoom?.GetType().Name}, outputPath={outputPath})...");
+
+            // Use RunManager.ToSave to create a SerializableRun, then serialize to JSON
+            var serializableRun = RunManager.Instance.ToSave(currentRoom);
+            var saveJson = SaveManager.ToJson(serializableRun);
+            Log($"Serialized save: {saveJson.Length} chars");
+
+            if (string.IsNullOrEmpty(outputPath))
+                return Error("No output path specified for save_game");
+
+            var dir = System.IO.Path.GetDirectoryName(outputPath);
+            if (!string.IsNullOrEmpty(dir) && !System.IO.Directory.Exists(dir))
+                System.IO.Directory.CreateDirectory(dir);
+            System.IO.File.WriteAllText(outputPath, saveJson);
+            Log($"Save written to: {outputPath}");
+
+            return new Dictionary<string, object?>
+            {
+                ["type"] = "save_result",
+                ["success"] = true,
+                ["path"] = outputPath,
+                ["size"] = saveJson.Length,
+            };
+        }
+        catch (Exception ex)
+        {
+            return ErrorWithTrace("SaveGame failed", ex);
+        }
+    }
     public Dictionary<string, object?> ExecuteAction(string action, Dictionary<string, object?>? args)
     {
         try
