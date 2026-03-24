@@ -1294,6 +1294,7 @@ def play(character="Ironclad", seed=None, auto=False, ascension=0, load_path=Non
             if state and state.get("type") == "error":
                 print(f"  {c(t('Error:','错误:'), 'red')} {state.get('message', '?')}")
                 return
+            # Extract character info from loaded state
             p = state.get("player", {}) if state else {}
             char_name = p.get("name", {})
             if isinstance(char_name, dict):
