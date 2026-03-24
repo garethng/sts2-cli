@@ -1486,13 +1486,20 @@ public class RunSimulator
             };
         }
 
+        // Check player death first — takes priority over everything else
+        if (player.Creature != null && (player.Creature.IsDead || player.Creature.CurrentHp <= 0))
+        {
+            Log($"Player is dead (IsDead={player.Creature.IsDead}, HP={player.Creature.CurrentHp}) — game over (defeat)");
+            return GameOverState(false);
+        }
+
         // Check if there's a pending card reward
         if (_pendingCardReward != null)
         {
             return CardRewardState(player, _runState.CurrentRoom as CombatRoom);
         }
 
-        // Check if RunManager reports game over
+        // Check if RunManager reports game over (victory)
         if (RunManager.Instance.IsGameOver)
         {
             return GameOverState(true);
@@ -1859,8 +1866,14 @@ public class RunSimulator
 
     private Dictionary<string, object?> DetectPostCombatState(Player player, CombatRoom combatRoom)
     {
-        Log($"Post-combat: RoomType={combatRoom.RoomType}, IsPreFinished={combatRoom.IsPreFinished}");
+        Log($"Post-combat: RoomType={combatRoom.RoomType}, IsPreFinished={combatRoom.IsPreFinished}, PlayerDead={player.Creature?.IsDead}");
         _syncCtx.Pump();
+
+        if (player.Creature != null && (player.Creature.IsDead || player.Creature.CurrentHp <= 0))
+        {
+            Log($"Player died in combat (IsDead={player.Creature.IsDead}, HP={player.Creature.CurrentHp}) — game over");
+            return GameOverState(false);
+        }
 
         // Generate rewards manually instead of using TestMode auto-accept
         if (_pendingRewards == null && !_rewardsProcessed)
