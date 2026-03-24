@@ -19,6 +19,7 @@ import random
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PROJECT = os.path.join(ROOT, "src", "Sts2Headless", "Sts2Headless.csproj")
 LIB_DIR = os.path.join(ROOT, "lib")
+SAVE_DIR = os.path.join(ROOT, "saves")
 
 def _find_dotnet():
     """Find .NET SDK binary."""
@@ -960,6 +961,8 @@ def get_input(prompt, valid_options=None, state=None):
     {c('potions', 'cyan')}  — 查看药水
     {c('relics', 'cyan')}   — 查看遗物
     {c('quit', 'cyan')}     — 退出
+    {c('save', 'cyan')}     — 存档
+    {c('saves', 'cyan')}    — 查看存档列表
 
   {c('操作:', 'bold')}
     地图:    输入路径编号 (0, 1, 2)
@@ -978,6 +981,8 @@ def get_input(prompt, valid_options=None, state=None):
     {c('potions', 'cyan')}  — show potions
     {c('relics', 'cyan')}   — show relics
     {c('quit', 'cyan')}     — quit
+    {c('save', 'cyan')}     — save game
+    {c('saves', 'cyan')}    — list saves
 
   {c('Actions:', 'bold')}
     Map:     path number (0, 1, 2)
@@ -1018,6 +1023,22 @@ def get_input(prompt, valid_options=None, state=None):
                 ctx = state.get("context", {})
                 print(f"  {c(n(ctx.get('act_name','?')), 'bold')} Floor {ctx.get('floor','?')}")
             continue
+        if raw == "save":
+            if hasattr(get_input, '_save_fn'):
+                get_input._save_fn()
+            else:
+                print(f"  {t('Save not available.','存档不可用。')}")
+            continue
+        if raw == "saves":
+            saves = _list_saves()
+            if saves:
+                print(f"\n  {c(t('Saved games:','存档列表:'), 'bold')}")
+                for s in saves:
+                    print(f"    {c(s['file'], 'cyan')}  {s['character']}  {t('Seed','种子')}:{s['seed']}  {t('Actions','操作数')}:{s['actions']}")
+                print(f"\n  {t('Load with:','读档命令:')} python3 play.py --load saves/{saves[0]['file']}")
+            else:
+                print(f"  {t('No saves found.','没有找到存档。')}")
+            continue
         if raw == "quit":
             print(t("Quitting...","退出..."))
             sys.exit(0)
@@ -1029,7 +1050,50 @@ def get_input(prompt, valid_options=None, state=None):
 
 # ─── Main game loop ───
 
-def play(character="Ironclad", seed=None, auto=False, ascension=0):
+def _save_game(save_path, character, seed, action_log):
+    """Write action replay save file."""
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    data = {"character": character, "seed": seed, "actions": action_log}
+    with open(save_path, "w") as f:
+        json.dump(data, f, indent=2)
+
+def _load_game(save_path):
+    """Read action replay save file. Returns (character, seed, actions)."""
+    with open(save_path) as f:
+        data = json.load(f)
+    return data["character"], data["seed"], data["actions"]
+
+def _list_saves():
+    """List available save files."""
+    if not os.path.isdir(SAVE_DIR):
+        return []
+    saves = []
+    for f in sorted(os.listdir(SAVE_DIR)):
+        if f.endswith(".json"):
+            path = os.path.join(SAVE_DIR, f)
+            try:
+                with open(path) as fh:
+                    d = json.load(fh)
+                saves.append({
+                    "file": f, "path": path,
+                    "character": d.get("character", "?"),
+                    "seed": d.get("seed", "?"),
+                    "actions": len(d.get("actions", [])),
+                })
+            except:
+                pass
+    return saves
+
+def play(character="Ironclad", seed=None, auto=False, ascension=0, load_path=None):
+    actual_seed = seed or f"cli_{random.randint(1000,9999)}"
+    replay_actions = None
+
+    if load_path:
+        character, actual_seed, replay_actions = _load_game(load_path)
+        print(f"\n{c(t('Loading save...','读取存档...'), 'yellow')} {os.path.basename(load_path)}")
+        print(f"  {t('Character','角色')}: {character}  {t('Seed','种子')}: {actual_seed}  {t('Actions','操作数')}: {len(replay_actions)}")
+
+    action_log = []
     proc = subprocess.Popen(
         [DOTNET, "run", "--no-build", "--project", PROJECT],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -1044,7 +1108,9 @@ def play(character="Ironclad", seed=None, auto=False, ascension=0):
             if l.startswith("{"):
                 return json.loads(l)
 
-    def send(cmd):
+    def send(cmd, record=True):
+        if record and cmd.get("cmd") == "action":
+            action_log.append(cmd)
         proc.stdin.write(json.dumps(cmd) + "\n")
         proc.stdin.flush()
         return read()
@@ -1052,20 +1118,50 @@ def play(character="Ironclad", seed=None, auto=False, ascension=0):
     # Wire send into get_input for map command
     get_input._send = send
 
+    def do_save():
+        from datetime import datetime
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        fname = f"{character}_{actual_seed}_{ts}.json"
+        save_path = os.path.join(SAVE_DIR, fname)
+        _save_game(save_path, character, actual_seed, action_log)
+        print(f"  {c(t('Saved!','已存档!'), 'green')} {fname} ({len(action_log)} {t('actions','步操作')})")
+        print(f"  {t('Load with:','读档命令:')} python3 play.py --load {os.path.relpath(save_path, ROOT)}")
+
+    get_input._save_fn = do_save
+
     try:
         ready = read()
         if not ready:
             print("Failed to start simulator")
             return
 
+        # Map display lang to game engine lang: "both" falls back to "zh".
+        game_lang = "en" if LANG == "en" else "zh"
+        state = send({
+            "cmd": "start_run",
+            "character": character,
+            "seed": actual_seed,
+            "ascension": ascension,
+            "lang": game_lang,
+        }, record=False)
+
+        # Replay saved actions silently
+        if replay_actions:
+            total = len(replay_actions)
+            for i, cmd in enumerate(replay_actions):
+                state = send(cmd, record=True)
+                pct = (i + 1) * 100 // total
+                print(f"\r  {t('Replaying','回放中')}... {pct}% ({i+1}/{total})", end="", flush=True)
+                if not state:
+                    print(f"\n{c(t('Replay failed at action','回放失败于操作'), 'red')} {i+1}")
+                    return
+            print(f"\r  {c(t('Replay complete!','回放完成!'), 'green')}" + " " * 30)
+            print()
+
         print(f"\n{c('Slay the Spire 2 — Headless CLI', 'bold')}")
         asc_str = f"  {t('Ascension','渐进难度')}: {ascension}" if ascension > 0 else ""
-        print(f"{t('Character','角色')}: {character}  {t('Seed','种子')}: {seed or t('random','随机')}{asc_str}")
+        print(f"{t('Character','角色')}: {character}  {t('Seed','种子')}: {actual_seed}{asc_str}")
         print(f"{t('Type','输入')} {c('help', 'cyan')} {t('for available commands.','查看可用命令。')}\n")
-
-        # Map display lang to game engine lang: "both" → "zh" (show Chinese names), "en" → "en"
-        game_lang = "en" if LANG == "en" else "zh"
-        state = send({"cmd": "start_run", "character": character, "seed": seed or f"cli_{random.randint(1000,9999)}", "ascension": ascension, "lang": game_lang})
 
         while True:
             if not state:
@@ -1414,11 +1510,38 @@ if __name__ == "__main__":
                        choices=range(0, 11), metavar="0-10",
                        help="Ascension level (0-10)")
     parser.add_argument("--lang", type=str, default="zh",
-                       choices=["en", "zh"],
-                       help="Display language: en or zh (default: zh)")
+                       choices=["en", "zh", "both"],
+                       help="Display language: en, zh, or both")
+    parser.add_argument("--load", type=str, default=None,
+                       help="Load a save file (action replay)")
+    parser.add_argument("--saves", action="store_true",
+                       help="List available saves and exit")
     args = parser.parse_args()
 
     LANG = args.lang
 
+    if args.saves:
+        saves = _list_saves()
+        if saves:
+            print(f"\n{'─' * 50}")
+            for s in saves:
+                print(f"  {s['file']}  {s['character']}  seed:{s['seed']}  actions:{s['actions']}")
+            print(f"{'─' * 50}")
+            print(f"  Load: python3 play.py --load saves/<file>")
+        else:
+            print("No saves found.")
+        sys.exit(0)
+
+    load_path = None
+    if args.load:
+        p = args.load
+        if not os.path.isabs(p):
+            p = os.path.join(ROOT, p)
+        if not os.path.isfile(p):
+            print(f"Save file not found: {args.load}")
+            sys.exit(1)
+        load_path = p
+
     ensure_setup()
-    play(character=args.character, seed=args.seed, auto=args.auto, ascension=args.ascension)
+    play(character=args.character, seed=args.seed, auto=args.auto,
+         ascension=args.ascension, load_path=load_path)
