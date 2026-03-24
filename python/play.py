@@ -157,7 +157,7 @@ def ensure_setup():
 # Language setting (set by --lang flag)
 LANG = "zh"  # "en", "zh", or "both"
 
-# ─── Native save file reader ───
+# ─── Native save file support ───
 
 def _find_native_save_dir():
     """Auto-detect the game's save directory."""
@@ -203,55 +203,45 @@ def show_native_save(save_path):
         data = json.load(f)
 
     print(f"\n{'═' * 60}")
-    print(f"  {'Native Save File' if LANG == 'en' else '游戏原生存档'}")
+    print(f"  {t('Native Save File', '游戏原生存档')}")
     print(f"  {save_path}")
     print(f"{'═' * 60}")
-
-    # Run info
     seed = data.get("rng", {}).get("seed", "?")
     ascension = data.get("ascension", 0)
     act_idx = data.get("current_act_index", 0)
     acts = data.get("acts", [])
     act_name = _id_to_name(acts[act_idx]["id"]) if act_idx < len(acts) else "?"
-    schema = data.get("schema_version", "?")
     run_time = data.get("run_time", 0)
     run_min = run_time // 60
     run_sec = run_time % 60
 
-    print(f"\n  {'Seed' if LANG == 'en' else '种子'}: {seed}")
-    print(f"  {'Ascension' if LANG == 'en' else '攀升'}: {ascension}")
-    print(f"  {'Act' if LANG == 'en' else '幕'}: {act_idx + 1} ({act_name})")
-    print(f"  {'Time' if LANG == 'en' else '时间'}: {run_min}m{run_sec:02d}s")
-    print(f"  Schema: v{schema}")
-
-    # Current room
+    print(f"\n  {t('Seed','种子')}: {seed}")
+    print(f"  {t('Ascension','攀升')}: {ascension}")
+    print(f"  {t('Act','幕')}: {act_idx + 1} ({act_name})")
+    print(f"  {t('Time','时间')}: {run_min}m{run_sec:02d}s")
+    print(f"  Schema: v{data.get('schema_version','?')}")
     room = data.get("pre_finished_room", {})
     if room:
         room_type = room.get("room_type", "?")
         enc = room.get("encounter_id") or room.get("event_id") or ""
-        print(f"  {'Room' if LANG == 'en' else '当前房间'}: {room_type}" + (f" ({_id_to_name(enc)})" if enc else ""))
+        print(f"  {t('Room','当前房间')}: {room_type}" + (f" ({_id_to_name(enc)})" if enc else ""))
 
-    # Map progress
     visited = data.get("visited_map_coords", [])
     if visited:
-        last = visited[-1]
-        print(f"  {'Map' if LANG == 'en' else '地图'}: {'Floor' if LANG == 'en' else '层'} {len(visited)} ({len(visited)} {'nodes visited' if LANG == 'en' else '个节点已访问'})")
+        print(f"  {t('Map','地图')}: {t('Floor','层')} {len(visited)} ({len(visited)} {t('nodes visited','个节点已访问')})")
 
-    # Players
     for player in data.get("players", []):
-        char_id = player.get("character_id", "?")
-        char_name = _id_to_name(char_id)
+        char_name = _id_to_name(player.get("character_id", "?"))
         hp = player.get("current_hp", 0)
         max_hp = player.get("max_hp", 0)
         gold = player.get("gold", 0)
         energy = player.get("max_energy", 3)
 
         print(f"\n  {'─' * 50}")
-        print(f"  {char_name}  HP: {hp}/{max_hp}  {'Gold' if LANG == 'en' else '金币'}: {gold}  {'Energy' if LANG == 'en' else '能量'}: {energy}")
+        print(f"  {char_name}  HP: {hp}/{max_hp}  {t('Gold','金币')}: {gold}  {t('Energy','能量')}: {energy}")
 
-        # Deck
         deck = player.get("deck", [])
-        print(f"\n  {'Deck' if LANG == 'en' else '牌组'} ({len(deck)}):")
+        print(f"\n  {t('Deck','牌组')} ({len(deck)}):")
         card_counts = {}
         for card in deck:
             cid = _id_to_name(card.get("id", "?"))
@@ -259,26 +249,23 @@ def show_native_save(save_path):
             key = f"{cid}{'+'*up if up else ''}"
             card_counts[key] = card_counts.get(key, 0) + 1
         for name, cnt in sorted(card_counts.items()):
-            print(f"    {'•'} {name}" + (f" x{cnt}" if cnt > 1 else ""))
+            print(f"    • {name}" + (f" x{cnt}" if cnt > 1 else ""))
 
-        # Relics
         relics = player.get("relics", [])
         if relics:
-            print(f"\n  {'Relics' if LANG == 'en' else '遗物'} ({len(relics)}):")
+            print(f"\n  {t('Relics','遗物')} ({len(relics)}):")
             for r in relics:
                 print(f"    🔶 {_id_to_name(r.get('id', '?'))}")
 
-        # Potions
         potions = player.get("potions", [])
         if potions:
-            print(f"\n  {'Potions' if LANG == 'en' else '药水'} ({len(potions)}):")
+            print(f"\n  {t('Potions','药水')} ({len(potions)}):")
             for p in potions:
                 print(f"    🧪 [{p.get('slot_index', '?')}] {_id_to_name(p.get('id', '?'))}")
 
-    # Act summary
     if acts:
         print(f"\n  {'─' * 50}")
-        print(f"  {'Acts' if LANG == 'en' else '幕章'} {'summary' if LANG == 'en' else '概览'}:")
+        print(f"  {t('Acts summary','幕章概览')}:")
         for i, act in enumerate(acts):
             act_id = _id_to_name(act.get("id", "?"))
             rooms_data = act.get("rooms", {})
@@ -288,9 +275,8 @@ def show_native_save(save_path):
             events = rooms_data.get("events_visited", 0)
             bosses = rooms_data.get("boss_encounters_visited", 0)
             marker = " ◀" if i == act_idx else ""
-            print(f"    {'Act' if LANG == 'en' else '幕'} {i+1}: {act_id}  "
-                  f"{'Boss' if LANG == 'en' else 'Boss'}: {boss}  "
-                  f"[{'M' if LANG == 'en' else '怪'}{normals} {'E' if LANG == 'en' else '英'}{elites} {'?' if LANG == 'en' else '事'}{events} {'B' if LANG == 'en' else 'B'}{bosses}]{marker}")
+            print(f"    {t('Act','幕')} {i+1}: {act_id}  Boss: {boss}  "
+                  f"[{t('M','怪')}{normals} {t('E','英')}{elites} {t('?','事')}{events} B{bosses}]{marker}")
 
     print(f"\n{'═' * 60}\n")
 
@@ -1081,8 +1067,7 @@ def get_input(prompt, valid_options=None, state=None):
         try:
             raw = input(f"\n{c('>', 'green')} {prompt}: ").strip().lower()
         except (EOFError, KeyboardInterrupt):
-            print(f"\n{t('Quitting...','退出...')}")
-            sys.exit(0)
+            raise _QuitRequested()
 
         if not raw:
             continue
@@ -1178,8 +1163,7 @@ def get_input(prompt, valid_options=None, state=None):
                 print(f"  {t('No saves found.','没有找到存档。')}")
             continue
         if raw == "quit":
-            print(t("Quitting...","退出..."))
-            sys.exit(0)
+            raise _QuitRequested()
         if raw == "abandon":
             confirm = input(f"  {t('Abandon this run? (y/n): ','放弃本次运行？(y/n): ')}")
             if confirm.strip().lower() in ("y", "yes", "是"):
@@ -1226,6 +1210,41 @@ def _list_saves():
             except:
                 pass
     return saves
+
+class _QuitRequested(Exception):
+    pass
+
+def _quit_with_save(send_fn, native_save_path, character, seed):
+    """Handle quit: ask user whether to save, then return."""
+    print()
+    try:
+        ans = input(f"  {t('Save before quitting? (y/n): ','退出前是否存档？(y/n): ')}").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        ans = "n"
+
+    if ans not in ("y", "yes", "是"):
+        print(f"  {t('Quitting without saving.','退出，未保存。')}")
+        return
+
+    if native_save_path:
+        save_path = native_save_path
+    else:
+        from datetime import datetime
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        char_tag = (character or "run").lower()
+        seed_tag = seed or "random"
+        save_path = os.path.join(os.getcwd(), f"{char_tag}_{seed_tag}_{ts}.save")
+
+    result = send_fn({"cmd": "save_game", "path": save_path})
+    if result and result.get("success"):
+        sz = result.get("size", 0)
+        print(f"  {c(t('Saved!','已存档!'), 'green')} ({sz // 1024}KB)")
+        print(f"  {t('Save path:','存档位置:')} {c(save_path, 'cyan')}")
+        print(f"  {t('Continue later:','下次继续:')} python3 play.py --continue {save_path}")
+    else:
+        msg = result.get("message", "?") if result else t("no response", "无响应")
+        print(f"  {c(t('Save failed:','存档失败:'), 'red')} {msg}")
+
 
 def play(character="Ironclad", seed=None, auto=False, ascension=0, load_path=None, native_save_path=None):
     actual_seed = seed or f"cli_{random.randint(1000,9999)}"
@@ -1278,7 +1297,7 @@ def play(character="Ironclad", seed=None, auto=False, ascension=0, load_path=Non
         result = send({"cmd": "save_game", "path": native_save_path}, record=False)
         if result and result.get("success"):
             sz = result.get("size", 0)
-            print(f"  {c(t(f'Save written ({sz//1024}KB)',f'存档已写入 ({sz//1024}KB)'), 'dim')}")
+            print(f"  {c(t(f'Save written ({sz//1024}KB)', f'存档已写入 ({sz//1024}KB)'), 'dim')}")
         elif result:
             print(f"  {c(t('Save failed:','存档写入失败:'), 'red')} {result.get('message','?')}")
 
@@ -1294,12 +1313,10 @@ def play(character="Ironclad", seed=None, auto=False, ascension=0, load_path=Non
             if state and state.get("type") == "error":
                 print(f"  {c(t('Error:','错误:'), 'red')} {state.get('message', '?')}")
                 return
-            # Extract character info from loaded state
             p = state.get("player", {}) if state else {}
             char_name = p.get("name", {})
             if isinstance(char_name, dict):
                 character = char_name.get("en", character)
-            ctx = state.get("context", {}) if state else {}
             print(f"  {c(t('Save loaded!','存档加载成功!'), 'green')}")
         else:
             # Map display lang to game engine lang: "both" falls back to "zh".
@@ -1394,7 +1411,7 @@ def play(character="Ironclad", seed=None, auto=False, ascension=0, load_path=Non
                         proc.wait(timeout=3)
                     except:
                         proc.kill()
-                    play(character=character, seed=None, auto=False)
+                    play(character=character, seed=None, auto=False, ascension=ascension)
                     return
                 break
 
@@ -1698,6 +1715,8 @@ def play(character="Ironclad", seed=None, auto=False, ascension=0, load_path=Non
                 print(f"  {t('Unknown state:','未知状态:')} {dec}")
                 state = send({"cmd": "action", "action": "proceed"})
 
+    except _QuitRequested:
+        _quit_with_save(send, native_save_path, character, actual_seed)
     except KeyboardInterrupt:
         print(f"\n  {c(t('Run abandoned.','已放弃本次运行。'), 'yellow')}")
     finally:

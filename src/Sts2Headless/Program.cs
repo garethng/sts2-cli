@@ -128,7 +128,6 @@ class Program
                     return new Dictionary<string, object?> { ["type"] = "error", ["message"] = "Provide 'path' or 'json' for load_save" };
                 return sim.LoadSave(saveJson);
             }
-
             case "get_map":
                 return sim.GetFullMap();
 

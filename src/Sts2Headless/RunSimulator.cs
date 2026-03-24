@@ -465,7 +465,6 @@ public class RunSimulator
 
             Log("Loading save file...");
 
-            // Deserialize the save JSON into SerializableRun
             var readResult = SaveManager.FromJson<SerializableRun>(saveJson);
             if (!readResult.Success || readResult.SaveData == null)
                 return Error($"Failed to parse save file: {readResult.Status} {readResult.ErrorMessage}");
@@ -473,23 +472,18 @@ public class RunSimulator
             var save = readResult.SaveData;
             Log($"Save loaded: seed={save.SerializableRng?.Seed}, act={save.CurrentActIndex}, ascension={save.Ascension}");
 
-            // Create RunState from the serializable save
             _runState = RunState.FromSerializable(save);
             if (_runState == null)
                 return Error("Failed to create RunState from save");
 
             Log($"RunState created, players={_runState.Players?.Count}");
 
-            // Set up RunManager for saved single-player run
             var netService = new NetSingleplayerGameService();
             RunManager.Instance.SetUpSavedSinglePlayer(_runState, save);
             LocalContext.NetId = netService.NetId;
 
-            // Register event handlers
             CombatManager.Instance.TurnStarted += _ => _turnStarted.Set();
             CombatManager.Instance.CombatEnded += _ => _combatEnded.Set();
-
-            // Register card selector
             CardSelectCmd.UseSelector(_cardSelector);
             LocPatches._bundleSimRef = this;
 
@@ -535,7 +529,6 @@ public class RunSimulator
             var currentRoom = _runState.CurrentRoom;
             Log($"Saving game (room={currentRoom?.GetType().Name}, outputPath={outputPath})...");
 
-            // Use RunManager.ToSave to create a SerializableRun, then serialize to JSON
             var serializableRun = RunManager.Instance.ToSave(currentRoom);
             var saveJson = SaveManager.ToJson(serializableRun);
             Log($"Serialized save: {saveJson.Length} chars");
