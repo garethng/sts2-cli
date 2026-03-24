@@ -487,6 +487,8 @@ public class RunSimulator
             CardSelectCmd.UseSelector(_cardSelector);
             LocPatches._bundleSimRef = this;
 
+            var savedRoom = _runState.CurrentRoom;
+
             // Save visited coords before Launch (EnterAct will clear them)
             var savedVisitedCoords = _runState.VisitedMapCoords?.ToList() ?? new List<MapCoord>();
             Log($"Save has {savedVisitedCoords.Count} visited coords");
@@ -494,21 +496,28 @@ public class RunSimulator
             RunManager.Instance.Launch();
             Log("Run launched");
 
-            RunManager.Instance.EnterAct(_runState.CurrentActIndex, doTransition: false).GetAwaiter().GetResult();
-            _syncCtx.Pump();
-            Log($"Entered Act {_runState.CurrentActIndex}");
-
-            // EnterAct clears visited coords and ActFloor — restore them from save
-            if (savedVisitedCoords.Count > 0)
+            if (savedRoom is MapRoom || savedRoom == null)
             {
-                if (_runState.VisitedMapCoords == null || _runState.VisitedMapCoords.Count == 0)
+                RunManager.Instance.EnterAct(_runState.CurrentActIndex, doTransition: false).GetAwaiter().GetResult();
+                _syncCtx.Pump();
+                Log($"Entered Act {_runState.CurrentActIndex}");
+
+                // EnterAct clears visited coords and ActFloor — restore them from save
+                if (savedVisitedCoords.Count > 0)
                 {
-                    foreach (var coord in savedVisitedCoords)
-                        _runState.AddVisitedMapCoord(coord);
+                    if (_runState.VisitedMapCoords == null || _runState.VisitedMapCoords.Count == 0)
+                    {
+                        foreach (var coord in savedVisitedCoords)
+                            _runState.AddVisitedMapCoord(coord);
+                    }
+                    _runState.ActFloor = savedVisitedCoords.Count;
+                    var last = savedVisitedCoords[^1];
+                    Log($"Restored map position: floor={_runState.ActFloor}, coord=({last.col},{last.row})");
                 }
-                _runState.ActFloor = savedVisitedCoords.Count;
-                var last = savedVisitedCoords[^1];
-                Log($"Restored map position: floor={_runState.ActFloor}, coord=({last.col},{last.row})");
+            }
+            else
+            {
+                Log($"Preserving saved room: {savedRoom.GetType().Name}");
             }
 
             return DetectDecisionPoint();
@@ -519,22 +528,102 @@ public class RunSimulator
         }
     }
 
-    public Dictionary<string, object?> SaveGame(string? outputPath)
+    private static bool TrySetPropertyValue(object target, string propertyName, object? value)
+    {
+        var prop = target.GetType().GetProperty(propertyName);
+        if (prop?.CanWrite != true)
+            return false;
+        prop.SetValue(target, value);
+        return true;
+    }
+
+    private static bool TryRollbackSerializedSaveToPreRoom(SerializableRun serializableRun, out string error)
+    {
+        error = "";
+
+        var saveType = serializableRun.GetType();
+        var visitedProp = saveType.GetProperty("VisitedMapCoords");
+        if (visitedProp == null)
+        {
+            error = "Save data is missing VisitedMapCoords";
+            return false;
+        }
+
+        var visitedValue = visitedProp.GetValue(serializableRun);
+        var visitedItems = new List<object?>();
+        if (visitedValue is System.Collections.IEnumerable visitedEnumerable)
+        {
+            foreach (var item in visitedEnumerable)
+                visitedItems.Add(item);
+        }
+
+        if (visitedItems.Count == 0)
+        {
+            error = "Cannot roll back save before the first room";
+            return false;
+        }
+
+        visitedItems.RemoveAt(visitedItems.Count - 1);
+
+        var visitedType = visitedProp.PropertyType;
+        if (visitedType.IsArray)
+        {
+            var elementType = visitedType.GetElementType()!;
+            var array = Array.CreateInstance(elementType, visitedItems.Count);
+            for (int i = 0; i < visitedItems.Count; i++)
+                array.SetValue(visitedItems[i], i);
+            visitedProp.SetValue(serializableRun, array);
+        }
+        else if (visitedType.IsGenericType)
+        {
+            var elementType = visitedType.GetGenericArguments()[0];
+            var listType = typeof(List<>).MakeGenericType(elementType);
+            var list = (System.Collections.IList)Activator.CreateInstance(listType)!;
+            foreach (var item in visitedItems)
+                list.Add(item);
+            visitedProp.SetValue(serializableRun, list);
+        }
+        else
+        {
+            error = $"Unsupported VisitedMapCoords type: {visitedType.Name}";
+            return false;
+        }
+
+        TrySetPropertyValue(serializableRun, "ActFloor", visitedItems.Count);
+        TrySetPropertyValue(serializableRun, "CurrentMapCoord", visitedItems.Count > 0 ? visitedItems[^1] : null);
+        TrySetPropertyValue(serializableRun, "PreFinishedRoom", null);
+        TrySetPropertyValue(serializableRun, "CurrentRoom", null);
+        return true;
+    }
+
+    public Dictionary<string, object?> SaveCheckpoint(string? outputPath)
     {
         try
         {
             if (_runState == null)
                 return Error("No active run to save");
 
-            var currentRoom = _runState.CurrentRoom;
-            Log($"Saving game (room={currentRoom?.GetType().Name}, outputPath={outputPath})...");
+            if (string.IsNullOrEmpty(outputPath))
+                return Error("No output path specified for quit save");
 
-            var serializableRun = RunManager.Instance.ToSave(currentRoom);
+            var currentRoom = _runState.CurrentRoom;
+            SerializableRun serializableRun;
+
+            if (currentRoom is MapRoom || currentRoom == null)
+            {
+                Log($"Saving map checkpoint (room={currentRoom?.GetType().Name ?? "null"}, outputPath={outputPath})...");
+                serializableRun = RunManager.Instance.ToSave(currentRoom);
+            }
+            else
+            {
+                Log($"Saving pre-room checkpoint from {currentRoom.GetType().Name} (outputPath={outputPath})...");
+                serializableRun = RunManager.Instance.ToSave(new MapRoom());
+                if (!TryRollbackSerializedSaveToPreRoom(serializableRun, out var rollbackError))
+                    return Error($"Cannot save checkpoint: {rollbackError}");
+            }
+
             var saveJson = SaveManager.ToJson(serializableRun);
             Log($"Serialized save: {saveJson.Length} chars");
-
-            if (string.IsNullOrEmpty(outputPath))
-                return Error("No output path specified for save_game");
 
             var dir = System.IO.Path.GetDirectoryName(outputPath);
             if (!string.IsNullOrEmpty(dir) && !System.IO.Directory.Exists(dir))
@@ -548,11 +637,12 @@ public class RunSimulator
                 ["success"] = true,
                 ["path"] = outputPath,
                 ["size"] = saveJson.Length,
+                ["room_type"] = currentRoom?.GetType().Name,
             };
         }
         catch (Exception ex)
         {
-            return ErrorWithTrace("SaveGame failed", ex);
+            return ErrorWithTrace("SaveCheckpoint failed", ex);
         }
     }
     public Dictionary<string, object?> ExecuteAction(string action, Dictionary<string, object?>? args)

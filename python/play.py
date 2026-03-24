@@ -1214,8 +1214,8 @@ def _list_saves():
 class _QuitRequested(Exception):
     pass
 
-def _quit_with_save(send_fn, native_save_path, character, seed):
-    """Handle quit: ask user whether to save, then return."""
+def _quit_with_save(native_save_path, character, seed):
+    """Return the save path to use on quit, or None to quit without saving."""
     print()
     try:
         ans = input(f"  {t('Save before quitting? (y/n): ','退出前是否存档？(y/n): ')}").strip().lower()
@@ -1224,26 +1224,42 @@ def _quit_with_save(send_fn, native_save_path, character, seed):
 
     if ans not in ("y", "yes", "是"):
         print(f"  {t('Quitting without saving.','退出，未保存。')}")
-        return
+        return None
 
     if native_save_path:
-        save_path = native_save_path
-    else:
-        from datetime import datetime
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        char_tag = (character or "run").lower()
-        seed_tag = seed or "random"
-        save_path = os.path.join(os.getcwd(), f"{char_tag}_{seed_tag}_{ts}.save")
+        return native_save_path
 
-    result = send_fn({"cmd": "save_game", "path": save_path})
+    from datetime import datetime
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    char_tag = (character or "run").lower()
+    seed_tag = seed or "random"
+    return os.path.join(os.getcwd(), f"{char_tag}_{seed_tag}_{ts}.save")
+
+
+def _show_quit_save_result(result):
+    """Print save confirmation or failure from a quit_result response."""
+    save_result = result.get("save") if result else None
+    if save_result and save_result.get("success"):
+        sz = save_result.get("size", 0)
+        save_path = save_result.get("path")
+        print(f"  {c(t('Saved!','已存档!'), 'green')} ({sz // 1024}KB)")
+        if save_path:
+            print(f"  {t('Save path:','存档位置:')} {c(save_path, 'cyan')}")
+            print(f"  {t('Continue later:','下次继续:')} python3 play.py --continue {save_path}")
+    elif save_result:
+        print(f"  {c(t('Save failed:','存档失败:'), 'red')} {save_result.get('message', '?')}")
+
+
+def _writeback_continue_save(send_fn, native_save_path):
+    """Best-effort writeback for --continue sessions when a stable map checkpoint is reached."""
+    if not native_save_path:
+        return
+    result = send_fn({"cmd": "write_continue_save", "path": native_save_path})
     if result and result.get("success"):
         sz = result.get("size", 0)
-        print(f"  {c(t('Saved!','已存档!'), 'green')} ({sz // 1024}KB)")
-        print(f"  {t('Save path:','存档位置:')} {c(save_path, 'cyan')}")
-        print(f"  {t('Continue later:','下次继续:')} python3 play.py --continue {save_path}")
-    else:
-        msg = result.get("message", "?") if result else t("no response", "无响应")
-        print(f"  {c(t('Save failed:','存档失败:'), 'red')} {msg}")
+        print(f"  {c(t(f'Save written ({sz//1024}KB)', f'存档已写入 ({sz//1024}KB)'), 'dim')}")
+    elif result:
+        print(f"  {c(t('Save failed:','存档写入失败:'), 'red')} {result.get('message','?')}")
 
 
 def play(character="Ironclad", seed=None, auto=False, ascension=0, load_path=None, native_save_path=None):
@@ -1290,17 +1306,6 @@ def play(character="Ironclad", seed=None, auto=False, ascension=0, load_path=Non
         print(f"  {t('Load with:','读档命令:')} python3 play.py --load {os.path.relpath(save_path, ROOT)}")
 
     get_input._save_fn = do_save
-
-    def _writeback_save():
-        if not native_save_path:
-            return
-        result = send({"cmd": "save_game", "path": native_save_path}, record=False)
-        if result and result.get("success"):
-            sz = result.get("size", 0)
-            print(f"  {c(t(f'Save written ({sz//1024}KB)', f'存档已写入 ({sz//1024}KB)'), 'dim')}")
-        elif result:
-            print(f"  {c(t('Save failed:','存档写入失败:'), 'red')} {result.get('message','?')}")
-
     try:
         ready = read()
         if not ready:
@@ -1416,7 +1421,7 @@ def play(character="Ironclad", seed=None, auto=False, ascension=0, load_path=Non
                 break
 
             elif dec == "map_select":
-                _writeback_save()
+                _writeback_continue_save(send, native_save_path)
                 show_map(state, send_fn=send)
                 choices = state.get("choices", [])
 
@@ -1716,15 +1721,36 @@ def play(character="Ironclad", seed=None, auto=False, ascension=0, load_path=Non
                 state = send({"cmd": "action", "action": "proceed"})
 
     except _QuitRequested:
-        _quit_with_save(send, native_save_path, character, actual_seed)
+        _quit_sent = False
+        quit_save_path = _quit_with_save(native_save_path, character, actual_seed)
+        # Retry loop: if save fails the process stays alive so we can try a different path.
+        while True:
+            quit_cmd = {"cmd": "quit"}
+            if quit_save_path:
+                quit_cmd["path"] = quit_save_path
+            result = send(quit_cmd)
+            if result and result.get("type") == "save_error":
+                save_detail = result.get("save") or {}
+                msg = save_detail.get("message", "?")
+                print(f"  {c(t('Save failed:','存档失败:'), 'red')} {msg}")
+                try:
+                    ans = input(f"  {t('New path (Enter = quit without saving): ','新路径（回车则不保存退出）: ')}").strip()
+                except (EOFError, KeyboardInterrupt):
+                    ans = ""
+                quit_save_path = ans if ans else None
+            else:
+                _quit_sent = True
+                _show_quit_save_result(result)
+                break
     except KeyboardInterrupt:
         print(f"\n  {c(t('Run abandoned.','已放弃本次运行。'), 'yellow')}")
     finally:
-        try:
-            proc.stdin.write(json.dumps({"cmd": "quit"}) + "\n")
-            proc.stdin.flush()
-        except:
-            pass
+        if not locals().get('_quit_sent'):
+            try:
+                result = send({"cmd": "quit"})
+                _show_quit_save_result(result)
+            except:
+                pass
         try:
             proc.terminate()
             proc.wait(timeout=5)

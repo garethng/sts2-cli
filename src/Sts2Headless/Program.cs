@@ -75,7 +75,14 @@ class Program
             }
 
             if (result != null)
+            {
                 WriteLine(result);
+                if (result.TryGetValue("type", out var resultTypeObj) &&
+                    string.Equals(resultTypeObj as string, "quit_result", StringComparison.Ordinal))
+                {
+                    break;
+                }
+            }
         }
     }
 
@@ -155,12 +162,6 @@ class Program
                         cards.Add(c.GetString() ?? "");
                 return sim.SetDrawOrder(cards);
             }
-            case "save_game":
-            {
-                var outputPath = cmd.TryGetProperty("path", out var op) ? op.GetString() : null;
-                return sim.SaveGame(outputPath);
-            }
-
             case "inspect_api":
             {
                 var targets = new[] { "SaveManager", "RunState" };
@@ -219,9 +220,44 @@ class Program
                 return new Dictionary<string, object?> { ["type"] = "api_info", ["types"] = results };
             }
 
+            case "write_continue_save":
+            {
+                var outputPath = cmd.TryGetProperty("path", out var op) ? op.GetString() : null;
+                return sim.SaveCheckpoint(outputPath);
+            }
+
             case "quit":
+            {
+                var outputPath = cmd.TryGetProperty("path", out var op) ? op.GetString() : null;
+                if (!string.IsNullOrEmpty(outputPath))
+                {
+                    var saveResult = sim.SaveCheckpoint(outputPath);
+                    bool saveOk = saveResult.TryGetValue("success", out var sObj) && sObj is bool b && b;
+                    if (!saveOk)
+                    {
+                        // Save failed — do NOT clean up so the caller can retry with a different path.
+                        return new Dictionary<string, object?>
+                        {
+                            ["type"] = "save_error",
+                            ["save"] = saveResult,
+                        };
+                    }
+                    sim.CleanUp();
+                    return new Dictionary<string, object?>
+                    {
+                        ["type"] = "quit_result",
+                        ["success"] = true,
+                        ["save"] = saveResult,
+                    };
+                }
                 sim.CleanUp();
-                return null;
+                return new Dictionary<string, object?>
+                {
+                    ["type"] = "quit_result",
+                    ["success"] = true,
+                    ["save"] = null,
+                };
+            }
 
             default:
                 return new Dictionary<string, object?> { ["type"] = "error", ["message"] = $"Unknown command: {cmdType}" };
