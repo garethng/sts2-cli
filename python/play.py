@@ -1783,4 +1783,5 @@ if __name__ == "__main__":
 
     ensure_setup()
     play(character=args.character, seed=args.seed, auto=args.auto,
-         ascension=args.ascension, load_path=load_path, native_save_path=native_save_path)
+         ascension=args.ascension, load_path=load_path,
+         native_save_path=native_save_path)
