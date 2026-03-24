@@ -1118,6 +1118,7 @@ def get_input(prompt, valid_options=None, state=None):
     {c('potions', 'cyan')}  — show potions
     {c('relics', 'cyan')}   — show relics
     {c('quit', 'cyan')}     — quit
+    {c('abandon', 'cyan')}  — abandon run (forfeit)
     {c('save', 'cyan')}     — save game
     {c('saves', 'cyan')}    — list saves
 
@@ -1179,6 +1180,11 @@ def get_input(prompt, valid_options=None, state=None):
         if raw == "quit":
             print(t("Quitting...","退出..."))
             sys.exit(0)
+        if raw == "abandon":
+            confirm = input(f"  {t('Abandon this run? (y/n): ','放弃本次运行？(y/n): ')}")
+            if confirm.strip().lower() in ("y", "yes", "是"):
+                raise KeyboardInterrupt("abandon")
+            continue
 
         if valid_options and raw not in valid_options:
             print(f"  {t('Invalid. Options:','无效。选项:')} {', '.join(sorted(valid_options))}")
@@ -1288,6 +1294,7 @@ def play(character="Ironclad", seed=None, auto=False, ascension=0, load_path=Non
             if state and state.get("type") == "error":
                 print(f"  {c(t('Error:','错误:'), 'red')} {state.get('message', '?')}")
                 return
+            # Extract character info from loaded state
             p = state.get("player", {}) if state else {}
             char_name = p.get("name", {})
             if isinstance(char_name, dict):
@@ -1346,13 +1353,50 @@ def play(character="Ironclad", seed=None, auto=False, ascension=0, load_path=Non
             if dec == "game_over":
                 victory = state.get("victory", False)
                 p = state.get("player", {})
+                ctx = state.get("context", {})
+
                 print(f"\n{'═' * 60}")
                 if victory:
-                    print(f"  {c(t('VICTORY!','胜利!'), 'green')}")
+                    print(f"  {c('★ ★ ★', 'yellow')}  {c(t('VICTORY!','胜利!'), 'green')}  {c('★ ★ ★', 'yellow')}")
                 else:
-                    print(f"  {c(t('DEFEAT','战败'), 'red')} Act {state.get('act')}, {t('Floor','层')} {state.get('floor')}")
-                show_player(p)
+                    print(f"  {c(t('DEFEAT','战败'), 'red')}")
+                print()
+
+                act_name = n(ctx.get("act_name", "?"))
+                floor = state.get("floor", "?")
+                print(f"  {t('Act','幕')}: {state.get('act','?')} ({act_name})  {t('Floor','层')}: {floor}")
+                print(f"  {t('Character','角色')}: {n(p.get('name','?'))}")
+                print(f"  HP: {p.get('hp','?')}/{p.get('max_hp','?')}  {t('Gold','金')}: {p.get('gold','?')}")
+
+                deck = p.get("deck", [])
+                if deck:
+                    print(f"  {t('Deck','牌组')}: {len(deck)} {t('cards','张牌')}")
+
+                relics = p.get("relics", [])
+                if relics:
+                    relic_names = [n(r.get("name", "?")) for r in relics]
+                    print(f"  {t('Relics','遗物')} ({len(relics)}): {', '.join(relic_names)}")
+
                 print(f"{'═' * 60}")
+
+                if auto:
+                    break
+
+                print(f"\n  {c('q', 'cyan')} {t('Quit','退出')}    {c('n', 'cyan')} {t('New run','开始新一局')}")
+                choice = input(f"  > ").strip().lower()
+                if choice == "n":
+                    # Restart: terminate current process and start fresh
+                    try:
+                        proc.stdin.write(json.dumps({"cmd": "quit"}) + "\n")
+                        proc.stdin.flush()
+                    except: pass
+                    try:
+                        proc.terminate()
+                        proc.wait(timeout=3)
+                    except:
+                        proc.kill()
+                    play(character=character, seed=None, auto=False)
+                    return
                 break
 
             elif dec == "map_select":
@@ -1655,6 +1699,8 @@ def play(character="Ironclad", seed=None, auto=False, ascension=0, load_path=Non
                 print(f"  {t('Unknown state:','未知状态:')} {dec}")
                 state = send({"cmd": "action", "action": "proceed"})
 
+    except KeyboardInterrupt:
+        print(f"\n  {c(t('Run abandoned.','已放弃本次运行。'), 'yellow')}")
     finally:
         try:
             proc.stdin.write(json.dumps({"cmd": "quit"}) + "\n")
