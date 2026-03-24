@@ -156,7 +156,6 @@ class Program
                         cards.Add(c.GetString() ?? "");
                 return sim.SetDrawOrder(cards);
             }
-
             case "save_game":
             {
                 var outputPath = cmd.TryGetProperty("path", out var op) ? op.GetString() : null;
